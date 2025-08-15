@@ -1,0 +1,134 @@
+name: Build Textura (Flutter)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Create Flutter project
+        run: |
+          flutter create .
+          flutter pub add supabase_flutter go_router url_launcher pdfx photo_view flutter_inappwebview
+
+      - name: Put Textura main.dart
+        run: |
+          mkdir -p lib
+          cat > lib/main.dart <<'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:supabase_flutter/supabase_flutter.dart';
+
+          const supaUrl = String.fromEnvironment('SUPABASE_URL');
+          const supaAnon = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            if (supaUrl.isEmpty || supaAnon.isEmpty) {
+              runApp(const _BadConfigApp());
+              return;
+            }
+            await Supabase.initialize(url: supaUrl, anonKey: supaAnon);
+            runApp(const TexturaApp());
+          }
+
+          class TexturaApp extends StatelessWidget {
+            const TexturaApp({super.key});
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                title: 'Textura',
+                home: const _Home(),
+              );
+            }
+          }
+
+          class _Home extends StatefulWidget {
+            const _Home({super.key});
+            @override
+            State<_Home> createState() => _HomeState();
+          }
+
+          class _HomeState extends State<_Home> {
+            String? _status;
+            @override
+            void initState() {
+              super.initState();
+              _check();
+            }
+            Future<void> _check() async {
+              try {
+                final c = Supabase.instance.client;
+                // simple ping by reading an empty table we know exists: profiles (may be empty)
+                await c.from('profiles').select('id').limit(1);
+                setState(() => _status = 'Connected to Supabase ✅');
+              } catch (e) {
+                setState(() => _status = 'Backend error: $e');
+              }
+            }
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Textura')),
+                body: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('Welcome to Textura!'),
+                      const SizedBox(height: 12),
+                      Text(_status ?? 'Checking backend...'),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
+          class _BadConfigApp extends StatelessWidget {
+            const _BadConfigApp({super.key});
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                home: Scaffold(
+                  appBar: AppBar(title: const Text('Textura')),
+                  body: const Center(child: Text('Missing SUPABASE_URL or SUPABASE_ANON_KEY')),
+                ),
+              );
+            }
+          }
+          EOF
+
+      - name: Add INTERNET permission to AndroidManifest
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
+            sed -i 's|</manifest>|  <uses-permission android:name="android.permission.INTERNET"/>\n</manifest>|' "$MANIFEST"
+          fi
+
+      - name: Build debug APK
+        run: |
+          flutter build apk --debug \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: textura-app-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
